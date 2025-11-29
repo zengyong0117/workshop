@@ -28,6 +28,8 @@ if 'selected_account_index' not in st.session_state:
     st.session_state.selected_account_index = 0
 if 'cal_date' not in st.session_state:
     st.session_state.cal_date = date.today()
+if 'show_trade_modal' not in st.session_state:
+    st.session_state.show_trade_modal = False
 
 # --- CSS 樣式 ---
 st.markdown("""
@@ -322,6 +324,21 @@ st.markdown("""
     }
     .preview-label { color: #b1b4bd; font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px; }
     .preview-value { color: #fff; font-weight: 700; font-size: 18px; margin-top: 4px; }
+
+    /* Trade modal layout */
+    .trade-modal { padding: 6px 2px; }
+    .trade-modal .dual-cols { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+    .trade-modal .triple-cols { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+    .trade-modal .section-title { margin-top: 12px; }
+    .trade-modal .dialog-helper { color: #9fa2ad; font-size: 13px; margin-bottom: 6px; }
+
+    /* Long / Short colors inside the modal */
+    .trade-direction div[role="radiogroup"] label:nth-child(1) p { color: #00CC96; }
+    .trade-direction div[role="radiogroup"] label:nth-child(2) p { color: #EF553B; }
+    .trade-direction div[role="radiogroup"] label[data-checked="true"] {
+        border-color: #00A6FF !important;
+        box-shadow: 0 0 0 1px #00A6FF;
+    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -518,111 +535,142 @@ STRATEGIES = ["Trend Following", "Reversal", "Breakout", "Scalp", "News Fade", "
 MISTAKES = ["FOMO", "Revenge Trading", "Over Sizing", "Hesitation", "Did Not Follow Plan"]
 SYMBOLS = ["NQ", "ES", "RTY", "CL", "GC", "BTC", "ETH", "Other"]
 
-st.sidebar.markdown("<div class='sidebar-form'>", unsafe_allow_html=True)
-with st.sidebar.form("trade_form", clear_on_submit=True):
-    st.markdown("<div class='section-title'>Trade Setup</div>", unsafe_allow_html=True)
-    c1, c2, c3 = st.columns([1.2, 1, 1])
-    with c1:
-        symbol_input = st.selectbox("Symbol", SYMBOLS) 
-    with c2:
-        size = st.number_input("Lots", min_value=0.01, value=1.0, step=0.1)
-    with c3:
-        direction = st.radio("Direction", ["Long", "Short"], horizontal=True)
+st.sidebar.markdown("Use the button below to open a centered trade log form.")
+if st.sidebar.button("✏️ Log Trade", use_container_width=True):
+    st.session_state.show_trade_modal = True
 
-    st.markdown("<div class='section-title'>Execution</div>", unsafe_allow_html=True)
-    trade_date = st.date_input("Date", date.today(), max_value=date.today())
-    col_entry1, col_entry2 = st.columns(2)
-    with col_entry1:
-        entry_time = st.time_input("Entry Time", time(9, 30))
-        entry_price = st.number_input("Entry Price", format="%.2f")
-    with col_entry2:
-        exit_time = st.time_input("Exit Time", time(9, 35))
-        exit_price = st.number_input("Exit Price", format="%.2f")
 
-    st.markdown("<div class='section-title'>Risk & Targets</div>", unsafe_allow_html=True)
-    col_risk1, col_risk2, col_fee = st.columns([1, 1, 1])
-    with col_risk1:
-        sl_price = st.number_input("Stop Loss", format="%.2f")
-    with col_risk2:
-        tp_price = st.number_input("Take Profit", format="%.2f")
-    with col_fee:
-        fees = st.number_input("Fees ($)", min_value=0.0, value=4.0, step=0.5)
+@st.dialog("New Trade Entry")
+def trade_entry_modal():
+    global trades_df
 
-    # Preview calculations for better context
-    risk = abs(entry_price - sl_price) if sl_price > 0 and entry_price > 0 else 0
-    reward = abs(tp_price - entry_price) if tp_price > 0 and entry_price > 0 else 0
-    rr_plan = round(reward / risk, 2) if risk > 0 else 0
-    potential_pnl = (tp_price - entry_price) * size if direction == "Long" else (entry_price - tp_price) * size
-    potential_net = potential_pnl - fees
-    risk_amount = risk * size
+    st.markdown("<div class='trade-modal'>", unsafe_allow_html=True)
+    st.markdown("<div class='dialog-helper'>Fill in your execution, risk, and notes, then save the trade.</div>", unsafe_allow_html=True)
 
-    preview_html = f"""
-    <div class='preview-grid'>
-        <div class='preview-chip'>
-            <div class='preview-label'>Planned R:R</div>
-            <div class='preview-value'>{rr_plan:.2f}</div>
-        </div>
-        <div class='preview-chip'>
-            <div class='preview-label'>Risk per Position</div>
-            <div class='preview-value'>${risk_amount:,.2f}</div>
-        </div>
-        <div class='preview-chip'>
-            <div class='preview-label'>TP Gross</div>
-            <div class='preview-value'>${potential_pnl:,.2f}</div>
-        </div>
-        <div class='preview-chip'>
-            <div class='preview-label'>TP After Fees</div>
-            <div class='preview-value'>${potential_net:,.2f}</div>
-        </div>
-    </div>
-    """
-    st.markdown(preview_html, unsafe_allow_html=True)
+    with st.form("trade_form_modal", clear_on_submit=True):
+        st.markdown("<div class='section-title'>Trade Setup</div>", unsafe_allow_html=True)
+        setup_cols = st.columns([1.2, 1, 1])
+        with setup_cols[0]:
+            symbol_input = st.selectbox("Symbol", SYMBOLS)
+        with setup_cols[1]:
+            size = st.number_input("Lots", min_value=0.01, value=1.0, step=0.1)
+        with setup_cols[2]:
+            st.markdown("<div class='trade-direction'>", unsafe_allow_html=True)
+            direction_default = 0 if st.session_state.get('last_direction', 'Long') == 'Long' else 1
+            direction = st.radio("Direction", ["Long", "Short"], horizontal=True, index=direction_default, key="trade_direction_radio")
+            st.markdown("</div>", unsafe_allow_html=True)
 
-    st.markdown("<div class='section-title'>Journal & Review</div>", unsafe_allow_html=True)
-    strategy = st.selectbox("Strategy", STRATEGIES)
-    tags = st.multiselect("Tags / Mistakes", MISTAKES)
-    notes = st.text_area("Trade Notes", placeholder="Why did you take this trade?")
-    uploaded_file = st.file_uploader("Chart Screenshot", type=['png', 'jpg'])
-    
-    if st.form_submit_button("💾 Save Trade Log", type="primary", use_container_width=True):
-        raw_pnl = (exit_price - entry_price) * size if direction == "Long" else (entry_price - exit_price) * size
-        net_pnl = raw_pnl - fees 
-        
-        risk = abs(entry_price - sl_price) if sl_price > 0 else 1
-        reward = abs(tp_price - entry_price) if tp_price > 0 else 0
-        actual = abs(exit_price - entry_price)
-        
+        st.markdown("<div class='section-title'>Execution</div>", unsafe_allow_html=True)
+        date_cols = st.columns([1, 1, 1])
+        with date_cols[0]:
+            trade_date = st.date_input("Date", date.today(), max_value=date.today())
+        with date_cols[1]:
+            entry_time = st.time_input("Entry Time", time(9, 30))
+            entry_price = st.number_input("Entry Price", format="%.2f")
+        with date_cols[2]:
+            exit_time = st.time_input("Exit Time", time(9, 35))
+            exit_price = st.number_input("Exit Price", format="%.2f")
+
+        st.markdown("<div class='section-title'>Risk & Targets</div>", unsafe_allow_html=True)
+        risk_cols = st.columns([1, 1, 1])
+        with risk_cols[0]:
+            sl_price = st.number_input("Stop Loss", format="%.2f")
+        with risk_cols[1]:
+            tp_price = st.number_input("Take Profit", format="%.2f")
+        with risk_cols[2]:
+            fees = st.number_input("Fees ($)", min_value=0.0, value=4.0, step=0.5)
+
+        risk = abs(entry_price - sl_price) if sl_price > 0 and entry_price > 0 else 0
+        reward = abs(tp_price - entry_price) if tp_price > 0 and entry_price > 0 else 0
         rr_plan = round(reward / risk, 2) if risk > 0 else 0
-        rr_actual = round(actual / risk, 2) if risk > 0 else 0
-        
-        if net_pnl > 0: result = "Win"
-        elif net_pnl < 0: result = "Loss"
-        else: result = "Break Even"
-        
-        img_path = ""
-        if uploaded_file:
-            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-            img_path = os.path.join(IMG_DIR, f"{ts}.png")
-            with open(img_path, "wb") as f: f.write(uploaded_file.getbuffer())
+        potential_pnl = (tp_price - entry_price) * size if direction == "Long" else (entry_price - tp_price) * size
+        potential_net = potential_pnl - fees
+        risk_amount = risk * size
 
-        tags_str = ", ".join(tags)
+        preview_html = f"""
+        <div class='preview-grid'>
+            <div class='preview-chip'>
+                <div class='preview-label'>Planned R:R</div>
+                <div class='preview-value'>{rr_plan:.2f}</div>
+            </div>
+            <div class='preview-chip'>
+                <div class='preview-label'>Risk per Position</div>
+                <div class='preview-value'>${risk_amount:,.2f}</div>
+            </div>
+            <div class='preview-chip'>
+                <div class='preview-label'>TP Gross</div>
+                <div class='preview-value'>${potential_pnl:,.2f}</div>
+            </div>
+            <div class='preview-chip'>
+                <div class='preview-label'>TP After Fees</div>
+                <div class='preview-value'>${potential_net:,.2f}</div>
+            </div>
+        </div>
+        """
+        st.markdown(preview_html, unsafe_allow_html=True)
 
-        new_row = {
-            'ID': datetime.now().strftime("%Y%m%d%H%M%S"),
-            'Account': selected_account,
-            'Date': trade_date, 'Symbol': symbol_input, 'Direction': direction, 'Size': size,
-            'Entry': entry_price, 'Exit': exit_price, 'SL': sl_price, 'TP': tp_price, 'Fees': fees,
-            'Entry_Time': entry_time, 'Exit_Time': exit_time,
-            'PnL': net_pnl, 'Result': result, 'RR_Plan': rr_plan, 'RR_Actual': rr_actual,
-            'Strategy': strategy, 'Tags': tags_str,
-            'Notes': notes, 'Image': img_path, 'Week_Num': trade_date.isocalendar()[1]
-        }
-        
-        trades_df = pd.concat([trades_df, pd.DataFrame([new_row])], ignore_index=True)
-        save_trades(trades_df)
-        st.success(f"Saved: {direction} {symbol_input} | PnL: ${net_pnl:.2f}")
-        st.rerun()
-st.sidebar.markdown("</div>", unsafe_allow_html=True)
+        st.markdown("<div class='section-title'>Journal & Review</div>", unsafe_allow_html=True)
+        strategy = st.selectbox("Strategy", STRATEGIES)
+        tags = st.multiselect("Tags / Mistakes", MISTAKES)
+        notes = st.text_area("Trade Notes", placeholder="Why did you take this trade?")
+        uploaded_file = st.file_uploader("Chart Screenshot", type=['png', 'jpg'])
+
+        submit_col, cancel_col = st.columns(2)
+        with submit_col:
+            save_btn = st.form_submit_button("💾 Save Trade Log", type="primary", use_container_width=True)
+        with cancel_col:
+            cancel_btn = st.form_submit_button("Cancel", use_container_width=True)
+
+        if save_btn:
+            raw_pnl = (exit_price - entry_price) * size if direction == "Long" else (entry_price - exit_price) * size
+            net_pnl = raw_pnl - fees
+
+            risk = abs(entry_price - sl_price) if sl_price > 0 else 1
+            reward = abs(tp_price - entry_price) if tp_price > 0 else 0
+            actual = abs(exit_price - entry_price)
+
+            rr_plan = round(reward / risk, 2) if risk > 0 else 0
+            rr_actual = round(actual / risk, 2) if risk > 0 else 0
+
+            if net_pnl > 0: result = "Win"
+            elif net_pnl < 0: result = "Loss"
+            else: result = "Break Even"
+
+            img_path = ""
+            if uploaded_file:
+                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                img_path = os.path.join(IMG_DIR, f"{ts}.png")
+                with open(img_path, "wb") as f: f.write(uploaded_file.getbuffer())
+
+            tags_str = ", ".join(tags)
+
+            new_row = {
+                'ID': datetime.now().strftime("%Y%m%d%H%M%S"),
+                'Account': selected_account,
+                'Date': trade_date, 'Symbol': symbol_input, 'Direction': direction, 'Size': size,
+                'Entry': entry_price, 'Exit': exit_price, 'SL': sl_price, 'TP': tp_price, 'Fees': fees,
+                'Entry_Time': entry_time, 'Exit_Time': exit_time,
+                'PnL': net_pnl, 'Result': result, 'RR_Plan': rr_plan, 'RR_Actual': rr_actual,
+                'Strategy': strategy, 'Tags': tags_str,
+                'Notes': notes, 'Image': img_path, 'Week_Num': trade_date.isocalendar()[1]
+            }
+
+            trades_df = pd.concat([trades_df, pd.DataFrame([new_row])], ignore_index=True)
+            save_trades(trades_df)
+            st.session_state.show_trade_modal = False
+            st.session_state.last_direction = direction
+            st.success(f"Saved: {direction} {symbol_input} | PnL: ${net_pnl:.2f}")
+            st.rerun()
+
+        if cancel_btn and st.session_state.show_trade_modal:
+            st.session_state.show_trade_modal = False
+            st.rerun()
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
+if st.session_state.show_trade_modal:
+    trade_entry_modal()
 
 # ==========================================
 # 主版面佈局
